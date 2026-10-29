@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Conn3x
+        env: &gh
+          GH_TOKEN: ${{ github.token }}
+        run: &install |
+          tag=$(gh release view -R conn3xorg/conn3x --json tagName -q .tagName)
+          file="conn3x_${tag#v}_linux_amd64.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -sSfLO "https://github.com/conn3xorg/conn3x/releases/download/$tag/$file"
+          curl -sSfLO "https://github.com/conn3xorg/conn3x/releases/download/$tag/checksums.txt"
+          grep " $file\$" checksums.txt | sha256sum -c -
+          mkdir -p bin && tar -xzf "$file" -C bin conn3x
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: conn3x version
+      - run: conn3x fmt -check -recursive
+      - name: Validate
+        run: conn3x init -backend=false && conn3x validate
+      - name: Validate the example
+        working-directory: examples/local
+        run: conn3x init -backend=false && conn3x validate
+
+  e2e:
+    needs: validate
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [rocky10, fedora45, ubuntu2404, debian13]
+    name: e2e (${{ matrix.distro }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The test host images live in the Conn3x repo.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: conn3xorg/conn3x
+          ref: main
+          path: conn3x
+          persist-credentials: false
+          sparse-checkout: test/images
+      - name: Install Conn3x
+        env: *gh
+        run: *install
+      # A container can't load kernel modules, so the runner loads WireGuard's.
+      - run: sudo modprobe wireguard
+      - name: Start two ${{ matrix.distro }} hosts
+        working-directory: examples/local
+        env:
+          CONTAINERFILE: ${{ github.workspace }}/conn3x/test/images/${{ matrix.distro }}/Containerfile
+          # wg-quick creates a network interface, so the hosts are privileged.
+          PODMAN: sudo podman
+        run: ./up.sh
+      - name: Apply, then plan again with no changes
+        working-directory: examples/local
+        run: |
+          conn3x init
+          conn3x apply -auto-approve
+          conn3x plan -detailed-exitcode
+      # Each host pings the other's tunnel address through wg0, which takes
+      # a handshake. The laptop in extra_peers has to be listed as a peer.
+      - name: Check the hosts reach each other through the tunnel
+        run: |
+          for pair in a:10.77.0.2 b:10.77.0.1; do
+            sudo podman exec -i "circuit-wireguard-${pair%%:*}" sh -eu -s "${pair#*:}" <<'EOF'
+          command -v ping >/dev/null || { if command -v dnf >/dev/null; then dnf -y -q install iputils; else apt-get update -qq && apt-get install -y -qq iputils-ping; fi; } >/dev/null
+          for _ in $(seq 10); do ping -I wg0 -c1 -W2 "$1" >/dev/null && break; sleep 1; done
+          ping -I wg0 -c3 -W2 "$1"
+          wg show wg0
+          wg show wg0 latest-handshakes | awk '$2 > 0' | grep -q .
+          wg show wg0 peers | grep -qx 'JQFo/pDmx0k60jGvYJl7/tUcUqRpUCR2LtO3empPYA0='
+          [ "$(stat -c %a /etc/wireguard/wg0.conf /etc/wireguard/wg0.key)" = "$(printf '600\n600')" ]
+          EOF
+          done
+      - name: Switch to hub and spoke, then plan again with no changes
+        working-directory: examples/local
+        run: |
+          conn3x apply -auto-approve -var hub=a
+          conn3x plan -detailed-exitcode -var hub=a
+          sudo podman exec circuit-wireguard-b grep -qx 'AllowedIPs = 10.77.0.0/24' /etc/wireguard/wg0.conf
+          sudo podman exec circuit-wireguard-a sysctl -n net.ipv4.ip_forward | grep -qx 1
+          for _ in $(seq 10); do sudo podman exec circuit-wireguard-b ping -I wg0 -c1 -W2 10.77.0.1 && exit 0; sleep 1; done
+          exit 1
+      - name: Clean up
+        if: always()
+        working-directory: examples/local
+        env:
+          PODMAN: sudo podman
+        run: ./down.sh
