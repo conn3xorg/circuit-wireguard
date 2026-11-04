@@ -31,6 +31,6 @@ To try hub and spoke, with `a` as the hub:
 conn3x apply -var hub=a
 ```
 
-`up.sh` listens on `127.0.0.1:2222` for `a` and `2223` for `b`. Set `PORT` to use another pair, and `NAME` to change the containers' names from `circuit-wireguard-a` and `-b`. Set `CONTAINERFILE` to test another distro, such as one of the images in Conn3x's `test/images`, which CI uses.
+`up.sh` listens on `127.0.0.1:2222` for `a` and `2223` for `b`. Set `PORT` to use another pair, and `CONTAINER_NAME` to change the containers' names from `circuit-wireguard-a` and `-b`. Set `CONTAINERFILE` to test another distro, such as one of the images in Conn3x's `test/images`, which CI uses.
 
 `./down.sh` removes the containers, their volumes, the key and the state.
