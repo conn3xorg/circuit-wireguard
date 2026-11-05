@@ -10,7 +10,7 @@ By default every host connects to every other. Name one host as `hub` and the re
 
 ```hcl
 module "wireguard" {
-  source = "github.com/conn3xorg/circuit-wireguard?ref=v0.1.1"
+  source = "github.com/conn3xorg/circuit-wireguard?ref=v0.2.0"
 
   hosts = {
     web  = "203.0.113.10"
