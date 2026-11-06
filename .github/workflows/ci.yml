@@ -98,21 +98,20 @@ jobs:
           sudo podman exec circuit-wireguard-a sysctl -n net.ipv4.ip_forward | grep -qx 1
           for _ in $(seq 10); do sudo podman exec circuit-wireguard-b ping -I wg0 -c1 -W2 10.77.0.1 && exit 0; sleep 1; done
           exit 1
-      # Restarting the containers boots systemd again, so this checks
-      # wg-quick@wg0 comes back by itself with the hub's routes.
-      - name: Restart both hosts, then check the tunnel and the plan
+      # Restarting a container boots systemd again, so this checks
+      # wg-quick@wg0 comes back by itself. Podman gives a restarted container
+      # a new address, which a real host keeps, so only the spoke restarts:
+      # it reaches the hub's unchanged address, and the hub learns the
+      # spoke's new one from the handshake.
+      - name: Restart the spoke, then check the tunnel and the plan
         working-directory: examples/local
         run: |
-          sudo podman restart circuit-wireguard-a circuit-wireguard-b
-          for h in a b; do
-            for _ in $(seq 60); do
-              case $(sudo podman exec circuit-wireguard-$h systemctl is-system-running 2>/dev/null) in running|degraded) break ;; esac
-              sleep 1
-            done
-            sudo podman exec circuit-wireguard-$h systemctl is-active wg-quick@wg0
+          sudo podman restart circuit-wireguard-b
+          for _ in $(seq 60); do
+            case $(sudo podman exec circuit-wireguard-b systemctl is-system-running 2>/dev/null) in running|degraded) break ;; esac
+            sleep 1
           done
-          cat up.auto.tfvars
-          for h in a b; do sudo podman inspect -f '{{.NetworkSettings.IPAddress}}' circuit-wireguard-$h; sudo podman exec circuit-wireguard-$h sh -c 'ip -br addr; wg show wg0'; done
+          sudo podman exec circuit-wireguard-b systemctl is-active wg-quick@wg0
           for _ in $(seq 10); do sudo podman exec circuit-wireguard-b ping -I wg0 -c1 -W2 10.77.0.1 >/dev/null && break; sleep 1; done
           sudo podman exec circuit-wireguard-b ping -I wg0 -c3 -W2 10.77.0.1
           sudo podman exec circuit-wireguard-a ping -I wg0 -c3 -W2 10.77.0.2
