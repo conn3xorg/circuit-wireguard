@@ -111,6 +111,8 @@ jobs:
             done
             sudo podman exec circuit-wireguard-$h systemctl is-active wg-quick@wg0
           done
+          cat up.auto.tfvars
+          for h in a b; do sudo podman inspect -f '{{.NetworkSettings.IPAddress}}' circuit-wireguard-$h; sudo podman exec circuit-wireguard-$h sh -c 'ip -br addr; wg show wg0'; done
           for _ in $(seq 10); do sudo podman exec circuit-wireguard-b ping -I wg0 -c1 -W2 10.77.0.1 >/dev/null && break; sleep 1; done
           sudo podman exec circuit-wireguard-b ping -I wg0 -c3 -W2 10.77.0.1
           sudo podman exec circuit-wireguard-a ping -I wg0 -c3 -W2 10.77.0.2
