@@ -77,7 +77,7 @@ jobs:
       # Each host pings the other's tunnel address through wg0, which takes
       # a handshake. The laptop in extra_peers has to be listed as a peer.
       - name: Check the hosts reach each other through the tunnel
-        run: |
+        run: &tunnel |
           for pair in a:10.77.0.2 b:10.77.0.1; do
             sudo podman exec -i "circuit-wireguard-${pair%%:*}" sh -eu -s "${pair#*:}" <<'EOF'
           command -v ping >/dev/null || { if command -v dnf >/dev/null; then dnf -y -q install iputils; else apt-get update -qq && apt-get install -y -qq iputils-ping; fi; } >/dev/null
@@ -98,6 +98,47 @@ jobs:
           sudo podman exec circuit-wireguard-a sysctl -n net.ipv4.ip_forward | grep -qx 1
           for _ in $(seq 10); do sudo podman exec circuit-wireguard-b ping -I wg0 -c1 -W2 10.77.0.1 && exit 0; sleep 1; done
           exit 1
+      # Restarting the containers boots systemd again, so this checks
+      # wg-quick@wg0 comes back by itself with the hub's routes.
+      - name: Restart both hosts, then check the tunnel and the plan
+        working-directory: examples/local
+        run: |
+          sudo podman restart circuit-wireguard-a circuit-wireguard-b
+          for h in a b; do
+            for _ in $(seq 60); do
+              case $(sudo podman exec circuit-wireguard-$h systemctl is-system-running 2>/dev/null) in running|degraded) break ;; esac
+              sleep 1
+            done
+            sudo podman exec circuit-wireguard-$h systemctl is-active wg-quick@wg0
+          done
+          for _ in $(seq 10); do sudo podman exec circuit-wireguard-b ping -I wg0 -c1 -W2 10.77.0.1 >/dev/null && break; sleep 1; done
+          sudo podman exec circuit-wireguard-b ping -I wg0 -c3 -W2 10.77.0.1
+          sudo podman exec circuit-wireguard-a ping -I wg0 -c3 -W2 10.77.0.2
+          conn3x plan -detailed-exitcode -var hub=a
+      # WireGuard comes from the distribution, so the upgrade is from the
+      # last release of the circuit: fresh hosts get that tag, then this
+      # checkout over it, the way someone moves the ?ref= pin. The hosts
+      # have to keep their keys.
+      - name: Upgrade from circuit-wireguard v0.2.0 on fresh hosts, then plan again with no changes
+        working-directory: examples/local
+        env:
+          CONTAINERFILE: ${{ github.workspace }}/conn3x/test/images/${{ matrix.distro }}/Containerfile
+          PODMAN: sudo podman
+        run: |
+          ./down.sh
+          ./up.sh
+          sed -i 's|source = "../.."|source = "github.com/conn3xorg/circuit-wireguard?ref=v0.2.0"|' main.tf
+          grep -q 'ref=v0.2.0' main.tf
+          conn3x init
+          conn3x apply -auto-approve
+          keys=$(conn3x output -json public_keys)
+          git checkout -- main.tf
+          conn3x init
+          conn3x apply -auto-approve
+          conn3x plan -detailed-exitcode
+          [ "$(conn3x output -json public_keys)" = "$keys" ]
+      - name: Check the upgraded hosts reach each other through the tunnel
+        run: *tunnel
       - name: Clean up
         if: always()
         working-directory: examples/local
