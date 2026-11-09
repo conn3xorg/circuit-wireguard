@@ -148,6 +148,7 @@ circuit "wireguard" {
   # key, which the other hosts' configs read from this step's stdout. With
   # no guard it runs once per host; replacing the step reads the key again.
   step "key" {
+    # conn3x-lint:ignore C3X101 makes the key only if it's missing and prints the public key; its stdout is the value the other hosts read
     command {
       command = "umask 077 && { test -s ${local.key_file} || wg genkey > ${local.key_file}; } && wg pubkey < ${local.key_file}"
     }
